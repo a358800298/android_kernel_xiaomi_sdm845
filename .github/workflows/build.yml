@@ -17,8 +17,7 @@ jobs:
     - name: Initialize
       run: |
         sudo apt-get update
-        sudo apt-get install -y git build-essential libssl-dev libelf-dev libncurses-dev bison flex dwarves ctags gcc-aarch64-linux-gnu
-
+        sudo apt-get install -y git build-essential libssl-dev libelf-dev libncurses-dev bison flex dwarves universal-ctags gcc-aarch64-linux-gnu
     - name: Set Environment
       run: |
         echo "ARCH=arm64" >> $GITHUB_ENV
