@@ -30,7 +30,7 @@ jobs:
 
     - name: Compile
       run: |
-        make -j$(nproc) Image.gz dtbo.img
+        make -j$(nproc) O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- Image.gz dtbo.img
 
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
