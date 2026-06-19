@@ -1,40 +1,19 @@
-name: Build Kernel
-
+name: Build Kernel with Docker Support
 on:
-  push:
-    branches: [ "lineage-21" ]
   workflow_dispatch:
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  build-kernel:
+    runs-on: ubuntu-22.04
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-      with:
-        submodules: recursive
-
-    - name: Initialize
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y git build-essential libssl-dev libelf-dev libncurses-dev bison flex dwarves universal-ctags gcc-aarch64-linux-gnu
-    - name: Set Environment
-      run: |
-        echo "ARCH=arm64" >> $GITHUB_ENV
-        echo "SUBARCH=arm64" >> $GITHUB_ENV
-
-    - name: Configure
-      run: |
-        make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- sdm845-perf_defconfig
-
-    - name: Compile
-      run: |
-        run: make -j$(nproc) O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- Image.gz CONFIG_ELLIPTIC_SENSOR=n
-
-    - name: Upload Artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: kernel-artifacts
-        path: |
-          arch/arm64/boot/Image.gz
-          arch/arm64/boot/dtbo.img
+      - name: Build Kernel
+        uses: dabao1955/kernel_build_action@v1.2
+        with:
+          kernel-url: https://github.com/a358800298/android_kernel_xiaomi_sdm845
+          kernel-branch: lineage-21
+          config: vendor/sdm845-perf_defconfig
+          arch: arm64
+          android-version: 14
+          lxc: true
+          aosp-clang: true
+          aosp-gcc: false
