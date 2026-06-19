@@ -6,14 +6,70 @@ jobs:
   build-kernel:
     runs-on: ubuntu-22.04
     steps:
-      - name: Build Kernel
-        uses: dabao1955/kernel_build_action@v1.2
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v4
         with:
-          kernel-url: https://github.com/a358800298/android_kernel_xiaomi_sdm845
-          kernel-branch: lineage-21
-          config: vendor/sdm845-perf_defconfig
-          arch: arm64
-          android-version: 14
-          lxc: true
-          aosp-clang: true
-          aosp-gcc: false
+          repository: a358800298/android_kernel_xiaomi_sdm845
+          ref: lineage-21
+
+      - name: Install All Compile Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git build-essential libssl-dev bc bison flex \
+            libelf-dev dwarves zip unzip cpio kmod \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+      - name: Pull AOSP Clang r536225 Toolchain
+        run: |
+          git clone https://github.com/LineageOS/android_prebuilts_clang_host_linux-x86_clang-r536225 clang
+          echo "$PWD/clang/bin" >> $GITHUB_PATH
+          echo "CC=clang" >> $GITHUB_ENV
+
+      - name: Configure Kernel & Enable Docker/LXC Feature
+        run: |
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          make vendor/sdm845-perf_defconfig
+
+          # Enable Namespace
+          scripts/config --enable CONFIG_NAMESPACES
+          scripts/config --enable CONFIG_UTS_NS
+          scripts/config --enable CONFIG_IPC_NS
+          scripts/config --enable CONFIG_USER_NS
+          scripts/config --enable CONFIG_PID_NS
+          scripts/config --enable CONFIG_NET_NS
+          # Enable Complete Cgroup
+          scripts/config --enable CONFIG_CGROUPS
+          scripts/config --enable CONFIG_CGROUP_CPUACCT
+          scripts/config --enable CONFIG_CGROUP_DEVICE
+          scripts/config --enable CONFIG_CGROUP_FREEZER
+          scripts/config --enable CONFIG_CGROUP_SCHED
+          scripts/config --enable CONFIG_CPUSETS
+          scripts/config --enable CONFIG_MEMCG
+          scripts/config --enable CONFIG_CGROUP_HUGETLB
+          # Enable Network & Storage For Container
+          scripts/config --enable CONFIG_OVERLAY_FS
+          scripts/config --enable CONFIG_VETH
+          scripts/config --enable CONFIG_BRIDGE
+          scripts/config --enable CONFIG_IP_NF_FILTER
+          scripts/config --enable CONFIG_NF_NAT
+          scripts/config --enable CONFIG_SECCOMP
+          scripts/config --enable CONFIG_NETFILTER_XT_MATCH_ADDRTYPE
+          scripts/config --enable CONFIG_NETFILTER_XT_MATCH_IPVS
+          # Unprivileged user namespace support for Android Docker
+          scripts/config --set-val CONFIG_USER_NS_UNPRIVILEGED y
+
+      - name: Compile Kernel Image.gz-dtb
+        run: |
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          make -j4 CC=clang Image.gz-dtb
+
+      - name: Upload Compiled Kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-image
+          path: arch/arm64/boot/Image.gz-dtb
