@@ -30,11 +30,9 @@ jobs:
           sudo apt-get update -y -q
           sudo apt-get install -y -q binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
 
-      - name: 安装 make 4.4.1-2
-        run: |
-          curl -LSs http://ftp.debian.org/debian/pool/main/m/make-dfsg/make_4.4.1-2_amd64.deb -o make.deb
-          sudo apt-get install -y -q ./make.deb
-          rm ./make.deb
+      # 原来的「安装 make 4.4.1-2」已删除：
+      # runner 自带 make >= 4.4.1，再装 4.4.1-2 属于降级，apt -y 会以
+      # "Packages were downgraded and -y was used without --allow-downgrades" 退出码 100 失败。
 
       - name: 同步仓库
         uses: actions/checkout@main
@@ -68,6 +66,8 @@ jobs:
           # 这里绝不能加 -j：多个 goal 并行时 merge_config.sh 会读到还没生成的 out/.config
           set -o pipefail
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
+          make --version | head -1
+          clang --version | head -1
           make O=out ARCH=arm64 CC="ccache clang" LD=ld.lld \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
