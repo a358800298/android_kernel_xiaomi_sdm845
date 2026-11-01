@@ -1,0 +1,136 @@
+# =============================================================================
+# build-dipper-docker.yml — 基于官方 LineageOS 树的 dipper Docker 内核
+# 目标分支: lineage-21（与手机上的 LOS 21 完全对应）
+#
+# 与 awkoo 版工作流的两处关键差异:
+#   1) 配置片段没有 lxc.config —— 官方树没这个文件，
+#      它提供的那几项（CHECKPOINT_RESTORE / EVENTFD / *_DIAG 等）已搬进 docker.config
+#   2) 编译参数加 CLANG_TRIPLE —— 官方 4.9 树用 GNU as 拼 .S，
+#      没有 CLANG_TRIPLE 会按 host triple 汇编，报 aarch64 不认识
+# =============================================================================
+name: dipper Docker 内核 (LOS21)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - docker/*
+
+env:
+  AOSP_TOOLCHAIN_BRANCH: android16
+  AOSP_CLANG_VERSION: r547379
+
+jobs:
+  build:
+    name: dipper + docker.config
+    runs-on: ubuntu-latest
+    steps:
+      - name: 安装软件包
+        run: |
+          sudo apt-get update -y -q
+          sudo apt-get install -y -q binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
+
+      - name: 安装 make 4.4.1-2
+        run: |
+          curl -LSs http://ftp.debian.org/debian/pool/main/m/make-dfsg/make_4.4.1-2_amd64.deb -o make.deb
+          sudo apt-get install -y -q ./make.deb
+          rm ./make.deb
+
+      - name: 同步仓库
+        uses: actions/checkout@main
+        with:
+          path: kernel
+
+      - name: 缓存 Clang
+        id: cache-clang
+        uses: actions/cache/restore@main
+        with:
+          path: clang
+          key: clang-${{ env.AOSP_TOOLCHAIN_BRANCH }}-${{ env.AOSP_CLANG_VERSION }}
+
+      - name: 下载 Clang
+        if: steps.cache-clang.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p clang
+          wget -c -t 10 "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/${{ env.AOSP_TOOLCHAIN_BRANCH }}-release/clang-${{ env.AOSP_CLANG_VERSION }}.tar.gz" -O clang.tgz
+          tar -zxvf clang.tgz -C clang/
+
+      - name: 保存 Clang
+        if: always() && steps.cache-clang.outputs.cache-hit != 'true'
+        uses: actions/cache/save@main
+        with:
+          path: clang
+          key: clang-${{ env.AOSP_TOOLCHAIN_BRANCH }}-${{ env.AOSP_CLANG_VERSION }}
+
+      - name: 合并配置
+        working-directory: kernel
+        run: |
+          # 这里绝不能加 -j：多个 goal 并行时 merge_config.sh 会读到还没生成的 out/.config
+          set -o pipefail
+          export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
+          make O=out ARCH=arm64 CC="ccache clang" LD=ld.lld \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            vendor/xiaomi/mi845_defconfig vendor/xiaomi/dipper.config docker.config \
+            2>&1 | tee merge.log
+          echo "==== 被丢弃的符号（merge_config 警告）===="
+          grep -oE "Value requested for CONFIG_[A-Z0-9_]+ not in final .config" merge.log | sort -u || echo "无"
+          echo "==== 关键项 ===="
+          grep -E "CONFIG_(CGROUP_DEVICE|CGROUP_PIDS|BRIDGE_NETFILTER|NETFILTER_XT_MATCH_ADDRTYPE|OVERLAY_FS|SECCOMP_FILTER|UTS_NS|PID_NS|NET_NS)=" out/.config || true
+
+      - name: 配置校验（缺项则失败）
+        working-directory: kernel
+        run: |
+          fail=0
+          for s in CONFIG_CGROUP_DEVICE CONFIG_CGROUP_PIDS CONFIG_BRIDGE_NETFILTER \
+                   CONFIG_NETFILTER_XT_MATCH_ADDRTYPE CONFIG_OVERLAY_FS CONFIG_SECCOMP_FILTER \
+                   CONFIG_UTS_NS CONFIG_PID_NS CONFIG_USER_NS CONFIG_NET_NS CONFIG_FHANDLE; do
+            grep -qx "$s=y" out/.config || { echo "MISS: $s"; fail=1; }
+          done
+          grep -qx "# CONFIG_ANDROID_PARANOID_NETWORK is not set" out/.config || { echo "BAD: ANDROID_PARANOID_NETWORK 必须为 n"; fail=1; }
+          exit $fail
+
+      - name: 编译
+        working-directory: kernel
+        run: |
+          export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
+          export KBUILD_BUILD_USER=${{ github.repository_owner }}
+          export KBUILD_BUILD_HOST=github-runner
+          export KBUILD_BUILD_TIMESTAMP=$(date -u -d "@$(git log -1 --format=%at)" +"%a %b %d %H:%M:%S %Z %Y")
+          make -j$(nproc) O=out ARCH=arm64 CC="ccache clang" LD=ld.lld \
+            LLVM=1 LLVM_IAS=1 \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- all
+
+      - name: 打包 AnyKernel3
+        run: |
+          git clone https://github.com/osm0sis/AnyKernel3 --depth=1 ak3
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb ak3/
+          cd ak3
+          cat > anykernel.sh <<'EOF'
+          properties() { '
+          kernel.string=Docker kernel for dipper (LOS21)
+          device.name1=dipper
+          do.devicecheck=1
+          '; }
+          ramdisk_compression=auto
+          patch_vbmeta_flag=auto
+          is_slot_device=auto
+          block=auto
+          . tools/ak3-core.sh
+          split_boot
+          # 强制 permissive（改 boot cmdline，重启不丢）。不想全局关 SELinux 就删这两行
+          patch_cmdline "androidboot.selinux" "androidboot.selinux=permissive"
+          flash_boot
+          EOF
+          zip -qr9 AnyKernel3-dipper-docker.zip * -x .git .github README.md '*placeholder'
+
+      - name: 上传产物
+        uses: actions/upload-artifact@main
+        with:
+          name: kernel-dipper-docker-ak3
+          path: |
+            ak3/AnyKernel3-dipper-docker.zip
+            kernel/out/arch/arm64/boot/Image.gz-dtb
+            kernel/out/.config
+            kernel/merge.log
