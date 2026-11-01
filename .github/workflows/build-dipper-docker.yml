@@ -3,16 +3,16 @@
 # 目标分支: lineage-21（与手机上的 LOS 21 完全对应）
 #
 # 与 awkoo 版工作流的关键差异:
-#   1) 配置片段没有 lxc.config —— 官方树没这个文件,
+#   1) 配置片段没有 lxc.config —— 官方树没这个文件，
 #      它提供的那几项（CHECKPOINT_RESTORE / EVENTFD / *_DIAG 等）已搬进 docker.config
-#   2) 编译参数加 CLANG_TRIPLE —— 官方 4.9 树用 GNU as 拼 .S,
-#      没有 CLANG_TRIPLE 会按 host triple 汇编, 报 aarch64 不认识
+#   2) 编译参数加 CLANG_TRIPLE —— 官方 4.9 树用 GNU as 拼 .S，
+#      没有 CLANG_TRIPLE 会按 host triple 汇编，报 aarch64 不认识
 #
 # 踩过的坑（全都在 Actions 日志/上游源码里逐一确认过）:
-#   - 不要装 make 4.4.1-2: runner 自带 make 更新, 装旧版是降级, apt -y 直接退 100
-#   - 不要用 CC="ccache clang": 该镜像没装 ccache, 报 ccache: No such file or directory
+#   - 不要装 make 4.4.1-2: runner 自带 make 更新，装旧版是降级，apt -y 直接退 100
+#   - 不要用 CC="ccache clang": 该镜像没装 ccache，报 ccache: No such file or directory
 #   - AnyKernel3 自 2023 起变量全部改大写: BLOCK / IS_SLOT_DEVICE /
-#     RAMDISK_COMPRESSION / PATCH_VBMETA_FLAG。写小写会被静默忽略,
+#     RAMDISK_COMPRESSION / PATCH_VBMETA_FLAG。写小写会被静默忽略，
 #     而 BLOCK 为空会直接 abort "Unable to determine partition"
 # =============================================================================
 name: dipper Docker 内核 (LOS21)
@@ -66,7 +66,7 @@ jobs:
       - name: 合并配置
         working-directory: kernel
         run: |
-          # 这里绝不能加 -j: 多个 goal 并行时 merge_config.sh 会读到还没生成的 out/.config
+          # 这里绝不能加 -j：多个 goal 并行时 merge_config.sh 会读到还没生成的 out/.config
           set -o pipefail
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
           make -v | sed -n 1p
@@ -80,17 +80,33 @@ jobs:
           grep -oE "Value requested for CONFIG_[A-Z0-9_]+ not in final .config" merge.log | sort -u || echo "无"
           echo "==== 关键项 ===="
           grep -E "CONFIG_(CGROUP_DEVICE|CGROUP_PIDS|BRIDGE_NETFILTER|NETFILTER_XT_MATCH_ADDRTYPE|OVERLAY_FS|SECCOMP_FILTER|UTS_NS|PID_NS|NET_NS)=" out/.config || true
+          # 复制一份非隐藏文件名：upload-artifact 默认跳过点开头的文件
+          cp out/.config out/docker-final.config
 
-      - name: 配置校验（缺项则失败）
+      - name: 配置校验（以 docker.config 为准逐条核对）
         working-directory: kernel
         run: |
-          fail=0
-          for s in CONFIG_CGROUP_DEVICE CONFIG_CGROUP_PIDS CONFIG_BRIDGE_NETFILTER \
-                   CONFIG_NETFILTER_XT_MATCH_ADDRTYPE CONFIG_OVERLAY_FS CONFIG_SECCOMP_FILTER \
-                   CONFIG_UTS_NS CONFIG_PID_NS CONFIG_USER_NS CONFIG_NET_NS CONFIG_FHANDLE; do
-            grep -qx "$s=y" out/.config || { echo "MISS: $s"; fail=1; }
-          done
+          fail=0; pass=0
+          while IFS= read -r want; do
+            case "$want" in
+              CONFIG_*=y|"# CONFIG_"*" is not set") ;;
+              *) continue ;;
+            esac
+            if grep -qxF "$want" out/.config; then
+              pass=$((pass+1))
+              echo "OK   $want"
+            else
+              fail=$((fail+1))
+              echo "MISS $want"
+              sym=${want%%=*}
+              sym=${sym#\# }
+              sym=${sym%% is not set*}
+              grep -E "^(# )?${sym}[= ]" out/.config | head -2 | sed 's/^/       actual: /' || true
+            fi
+          done < arch/arm64/configs/docker.config
+          echo "================ 通过 $pass / 缺失 $fail ================"
           grep -qx "# CONFIG_ANDROID_PARANOID_NETWORK is not set" out/.config || { echo "BAD: ANDROID_PARANOID_NETWORK 必须为 n"; fail=1; }
+          if grep -qx "CONFIG_DEVTMPFS_MOUNT=y" out/.config; then echo "BAD: DEVTMPFS_MOUNT 不能为 y（会卡第一屏）"; fail=1; fi
           exit $fail
 
       - name: 编译
@@ -134,7 +150,7 @@ jobs:
           PATCH_VBMETA_FLAG=auto;
           . tools/ak3-core.sh;
           split_boot;
-          # 强制 permissive（改 boot cmdline, 重启不丢）; 不想全局关 SELinux 就删这两行
+          # 强制 permissive（改 boot cmdline，重启不丢）；不想全局关 SELinux 就删这两行
           patch_cmdline "androidboot.selinux" "androidboot.selinux=permissive";
           flash_boot;
           AK3EOF
@@ -150,5 +166,8 @@ jobs:
             ak3/AnyKernel3-dipper-docker.zip
             kernel/out/arch/arm64/boot/Image.gz-dtb
             kernel/out/.config
+            kernel/out/docker-final.config
             kernel/merge.log
+          # 关键：.config 是点开头的文件，不加这行会被静默排除
+          include-hidden-files: true
           if-no-files-found: warn
