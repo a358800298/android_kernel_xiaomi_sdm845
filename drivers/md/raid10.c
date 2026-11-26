@@ -4595,12 +4595,16 @@ static int handle_reshape_read_error(struct mddev *mddev,
 	struct r10conf *conf = mddev->private;
 	struct {
 		struct r10bio r10_bio;
-		struct r10dev devs[conf->copies];
+		/* Clang 20 rejects VLA in struct; copies <= raid_disks <= 256 */
+		struct r10dev devs[256];
 	} on_stack;
 	struct r10bio *r10b = &on_stack.r10_bio;
 	int slot = 0;
 	int idx = 0;
 	struct bio_vec *bvec = r10_bio->master_bio->bi_io_vec;
+
+	if (conf->copies > 256)
+		return -EINVAL;
 
 	r10b->sector = r10_bio->sector;
 	__raid10_find_phys(&conf->prev, r10b);
